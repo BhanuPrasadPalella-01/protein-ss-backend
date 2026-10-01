@@ -59,8 +59,8 @@ def compute_percentages(structure_str):
 def smooth_structure(structure_str):
     """Cosmetic post-processing: replace isolated single-residue H or E segments
     (e.g. the lone E in "HHEHH") with their neighbouring state, or C when the
-    neighbours disagree. This only tidies the displayed output; it is not part of
-    the model, and the benchmark numbers in /comparison are from raw predictions.
+    neighbours disagree. This only tidies the live /predict/baseline output; it is
+    not part of the model. Sample predictions and /comparison use raw predictions.
     """
     s = list(structure_str)
     n = len(s)
@@ -146,8 +146,9 @@ def predict_sample(sample_id: str):
         attn_logits = attention_model(X, PSSM, key_padding_mask=None)
         attn_preds = attn_logits.argmax(dim=-1)[0]
 
-    pssm_structure = smooth_structure(''.join(class_names[p] for p in pssm_preds.cpu().numpy()))
-    attn_structure = smooth_structure(''.join(class_names[p] for p in attn_preds.cpu().numpy()))
+    # Raw (unsmoothed) predictions so match rates line up with the reported benchmark.
+    pssm_structure = ''.join(class_names[p] for p in pssm_preds.cpu().numpy())
+    attn_structure = ''.join(class_names[p] for p in attn_preds.cpu().numpy())
 
     def match_rate(pred_str):
         matches = sum(a == b for a, b in zip(pred_str, true_structure))
