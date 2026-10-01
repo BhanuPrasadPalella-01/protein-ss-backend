@@ -3,6 +3,7 @@ import torch
 import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
 from model import BiLSTMTagger, BiLSTMTaggerPSSM, BiLSTMAttentionPSSM
@@ -55,9 +56,11 @@ def compute_percentages(structure_str):
     }
 
 
-@app.get("/health")
+# Cheap liveness check: no auth, no model call. Covered by the wildcard CORS policy above.
+# HEAD is accepted too so uptime pingers can keep the Render instance warm.
+@app.api_route("/health", methods=["GET", "HEAD"], response_class=PlainTextResponse)
 def health():
-    return {"status": "ok"}
+    return "ok"
 
 
 @app.post("/predict/baseline")
