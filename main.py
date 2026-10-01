@@ -56,6 +56,28 @@ def compute_percentages(structure_str):
     }
 
 
+def smooth_structure(structure_str):
+    """Cosmetic post-processing: replace isolated single-residue H or E segments
+    (e.g. the lone E in "HHEHH") with their neighbouring state, or C when the
+    neighbours disagree. This only tidies the displayed output; it is not part of
+    the model, and the benchmark numbers in /comparison are from raw predictions.
+    """
+    s = list(structure_str)
+    n = len(s)
+    for i, label in enumerate(structure_str):
+        if label not in "HE":
+            continue
+        left = structure_str[i - 1] if i > 0 else None
+        right = structure_str[i + 1] if i < n - 1 else None
+        if left == label or right == label:
+            continue
+        if left is None or right is None:
+            s[i] = left or right or label  # sequence edge: take the only neighbour
+        else:
+            s[i] = left if left == right else "C"
+    return "".join(s)
+
+
 # Cheap liveness check: no auth, no model call. Covered by the wildcard CORS policy above.
 # HEAD is accepted too so uptime pingers can keep the Render instance warm.
 @app.api_route("/health", methods=["GET", "HEAD"], response_class=PlainTextResponse)
@@ -85,7 +107,7 @@ def predict_baseline(req: SequenceRequest):
         logits = baseline_model(X)
         preds = logits.argmax(dim=-1)[0]
 
-    predicted_structure = ''.join(class_names[p] for p in preds.cpu().numpy())
+    predicted_structure = smooth_structure(''.join(class_names[p] for p in preds.cpu().numpy()))
 
     return {
         "sequence": seq,
@@ -124,8 +146,8 @@ def predict_sample(sample_id: str):
         attn_logits = attention_model(X, PSSM, key_padding_mask=None)
         attn_preds = attn_logits.argmax(dim=-1)[0]
 
-    pssm_structure = ''.join(class_names[p] for p in pssm_preds.cpu().numpy())
-    attn_structure = ''.join(class_names[p] for p in attn_preds.cpu().numpy())
+    pssm_structure = smooth_structure(''.join(class_names[p] for p in pssm_preds.cpu().numpy()))
+    attn_structure = smooth_structure(''.join(class_names[p] for p in attn_preds.cpu().numpy()))
 
     def match_rate(pred_str):
         matches = sum(a == b for a, b in zip(pred_str, true_structure))
