@@ -22,6 +22,7 @@ device = torch.device("cpu")  # Render free tier has no GPU
 residues = ['A','C','E','D','G','F','I','H','K','M','L','N','Q','P','S','R','T','W','V','Y','X','NoSeq']
 aa_to_idx = {aa: i for i, aa in enumerate(residues)}
 class_names = ['H', 'E', 'C']
+STANDARD_AA = set('ACDEFGHIKLMNPQRSTVWY')
 
 # ---- Load all 3 models once at startup ----
 baseline_model = BiLSTMTagger().to(device)
@@ -64,6 +65,13 @@ def predict_baseline(req: SequenceRequest):
     seq = req.sequence.strip().upper()
     if not seq:
         raise HTTPException(400, "Sequence cannot be empty")
+    invalid = sorted(set(seq) - STANDARD_AA)
+    if invalid:
+        raise HTTPException(
+            400,
+            f"Invalid characters in sequence: {' '.join(repr(c) for c in invalid)}. "
+            "Only the 20 standard amino-acid letters (ACDEFGHIKLMNPQRSTVWY) are allowed.",
+        )
     if len(seq) > 700:
         raise HTTPException(400, "Sequence too long (max 700 residues)")
 
