@@ -1,12 +1,32 @@
-import numpy as np
+"""Extract a few CB513 test proteins (sequence, true structure, PSSM) into
+data/sample_proteins.json for the API's /samples endpoints.
+
+Usage:
+    python extract_samples.py --data-dir path/to/data/processed
+
+--data-dir is the folder with X_test.npy, Y_test.npy and PSSM_test.npy produced
+by the training repo's preprocessing (default: $PROTEIN_SS_DATA, then
+../protein-ss-prediction/data/processed).
+"""
+import argparse
 import json
+import os
+from pathlib import Path
+
+import numpy as np
 
 residues = ['A','C','E','D','G','F','I','H','K','M','L','N','Q','P','S','R','T','W','V','Y','X','NoSeq']
 ss_labels_q3 = ['H', 'E', 'C']
 
-X_test = np.load('/Users/palellabhanuprasad/protein-ss-prediction/data/processed/X_test.npy')
-Y_test = np.load('/Users/palellabhanuprasad/protein-ss-prediction/data/processed/Y_test.npy')
-PSSM_test = np.load('/Users/palellabhanuprasad/protein-ss-prediction/data/processed/PSSM_test.npy')
+parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+parser.add_argument("--data-dir", type=Path,
+                    default=Path(os.environ.get("PROTEIN_SS_DATA", "../protein-ss-prediction/data/processed")))
+parser.add_argument("--out", type=Path, default=Path("data/sample_proteins.json"))
+args = parser.parse_args()
+
+X_test = np.load(args.data_dir / 'X_test.npy')
+Y_test = np.load(args.data_dir / 'Y_test.npy')
+PSSM_test = np.load(args.data_dir / 'PSSM_test.npy')
 
 samples = []
 # Pick 10 proteins with varied lengths, skipping the very first few if too short
@@ -34,7 +54,7 @@ print(f"Extracted {len(samples)} samples")
 for s in samples:
     print(f"  {s['id']}: length={s['length']}")
 
-with open('data/sample_proteins.json', 'w') as f:
+with open(args.out, 'w') as f:
     json.dump(samples, f)
 
-print("\nSaved to data/sample_proteins.json")
+print(f"\nSaved to {args.out}")
