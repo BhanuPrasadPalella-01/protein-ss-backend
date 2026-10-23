@@ -46,6 +46,12 @@ uvicorn main:app --reload
 
 Then open <http://localhost:8000/docs> for the interactive API docs.
 
+Run the tests (they also run on every push via GitHub Actions):
+
+```bash
+pip install pytest httpx && python -m pytest
+```
+
 ## Deploy
 
 On Render, create a Python web service with:
