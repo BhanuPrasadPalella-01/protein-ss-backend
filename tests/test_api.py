@@ -90,3 +90,39 @@ def test_trace_validates_parameters():
     assert client.get(f"/samples/{sample_id}/trace?length=2").status_code == 400
     assert client.get(f"/samples/{sample_id}/trace?start=0&length=8").json()["window"]["residues"] == \
         client.get("/samples").json()[0]["sequence"][:8]
+
+
+FAKE_PDB = "\n".join([
+    "ATOM      2  CA  MET A   1       2.221   2.756 -11.479  1.00  0.91           C",
+    "ATOM     10  CA  GLN A   2       0.334   4.878  -9.004  1.00  0.80           C",
+    "END",
+])
+
+
+def test_fold_returns_pdb_and_confidence_and_caches(monkeypatch):
+    import main
+    calls = []
+    monkeypatch.setattr(main, "fetch_esmfold", lambda seq: calls.append(seq) or FAKE_PDB)
+    main._fold_cache.clear()
+    r = client.post("/fold", json={"sequence": " mq "})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["sequence"] == "MQ" and "ATOM" in body["pdb"]
+    assert body["plddt"] == [91.0, 80.0] and body["mean_plddt"] == 85.5
+    client.post("/fold", json={"sequence": "MQ"})
+    assert calls == ["MQ"]  # second request served from the cache
+
+
+def test_fold_validates_and_reports_upstream_failures(monkeypatch):
+    import main
+    from fastapi import HTTPException
+
+    assert client.post("/fold", json={"sequence": "A" * 401}).status_code == 400
+    assert client.post("/fold", json={"sequence": "MKX"}).status_code == 400
+
+    def down(seq):
+        raise HTTPException(503, "Couldn't reach the ESMFold structure service. Try again in a minute.")
+    monkeypatch.setattr(main, "fetch_esmfold", down)
+    main._fold_cache.clear()
+    r = client.post("/fold", json={"sequence": "MKTAYIAK"})
+    assert r.status_code == 503 and "ESMFold" in r.json()["detail"]

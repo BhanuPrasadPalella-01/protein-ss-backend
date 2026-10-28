@@ -1,5 +1,10 @@
 import json
+import os
 import re
+import threading
+import urllib.error
+import urllib.request
+from collections import OrderedDict
 import torch
 import numpy as np
 from fastapi import FastAPI, HTTPException
@@ -86,9 +91,9 @@ def health():
     return "ok"
 
 
-@app.post("/predict/baseline")
-def predict_baseline(req: SequenceRequest):
-    seq = req.sequence.strip().upper()
+def clean_sequence(raw, max_length):
+    """Trim and upper-case a submitted sequence; reject anything but the 20 standard amino acids."""
+    seq = raw.strip().upper()
     if not seq:
         raise HTTPException(400, "Sequence cannot be empty")
     invalid = sorted(set(seq) - STANDARD_AA)
@@ -98,8 +103,14 @@ def predict_baseline(req: SequenceRequest):
             f"Invalid characters in sequence: {' '.join(repr(c) for c in invalid)}. "
             "Only the 20 standard amino-acid letters (ACDEFGHIKLMNPQRSTVWY) are allowed.",
         )
-    if len(seq) > 700:
-        raise HTTPException(400, "Sequence too long (max 700 residues)")
+    if len(seq) > max_length:
+        raise HTTPException(400, f"Sequence too long (max {max_length} residues)")
+    return seq
+
+
+@app.post("/predict/baseline")
+def predict_baseline(req: SequenceRequest):
+    seq = clean_sequence(req.sequence, 700)
 
     indices = [aa_to_idx.get(ch, aa_to_idx['X']) for ch in seq]
     X = torch.tensor([indices], dtype=torch.long).to(device)
@@ -246,6 +257,65 @@ def trace_sample(sample_id: str, start: int | None = None, length: int = TRACE_D
             "probabilities": _r(probs[start:end]),
         },
     }
+
+
+# ---- 3D structure via ESMFold ----
+# Our models only predict a label per residue, not coordinates. For the 3D view we ask Meta's public
+# ESMFold API for a predicted structure and return it as PDB text; the frontend colors it with our labels.
+ESMFOLD_URL = os.environ.get("ESMFOLD_URL", "https://api.esmatlas.com/foldSequence/v1/pdb/")
+FOLD_MAX_RESIDUES = 400   # the public ESMFold API's limit
+FOLD_TIMEOUT_S = 60
+FOLD_CACHE_SIZE = 64
+_fold_cache = OrderedDict()
+_fold_cache_lock = threading.Lock()
+
+
+def fetch_esmfold(seq):
+    """POST the sequence to ESMFold and return PDB text. Raises HTTPException on any upstream failure."""
+    request = urllib.request.Request(ESMFOLD_URL, data=seq.encode(), method="POST",
+                                     headers={"Content-Type": "text/plain", "User-Agent": "protein-ss-backend"})
+    try:
+        with urllib.request.urlopen(request, timeout=FOLD_TIMEOUT_S) as response:
+            pdb = response.read().decode()
+    except urllib.error.HTTPError as err:
+        raise HTTPException(502, f"The ESMFold service returned an error ({err.code}). Try again later.")
+    except (urllib.error.URLError, TimeoutError):
+        raise HTTPException(503, "Couldn't reach the ESMFold structure service. Try again in a minute.")
+    if "ATOM" not in pdb:
+        raise HTTPException(502, "The ESMFold service returned an unexpected response.")
+    return pdb
+
+
+def plddt_per_residue(pdb):
+    """ESMFold stores per-residue confidence (pLDDT) in the B-factor column; read it from the CA atoms, as 0-100."""
+    values = [float(line[60:66]) for line in pdb.splitlines()
+              if line.startswith("ATOM") and line[12:16] == " CA "]
+    if values and max(values) <= 1:
+        values = [v * 100 for v in values]
+    return [round(v, 1) for v in values]
+
+
+@app.post("/fold")
+def fold(req: SequenceRequest):
+    seq = clean_sequence(req.sequence, FOLD_MAX_RESIDUES)
+    with _fold_cache_lock:
+        if seq in _fold_cache:
+            _fold_cache.move_to_end(seq)
+            return _fold_cache[seq]
+    pdb = fetch_esmfold(seq)
+    plddt = plddt_per_residue(pdb)
+    result = {
+        "sequence": seq,
+        "pdb": pdb,
+        "plddt": plddt,
+        "mean_plddt": round(sum(plddt) / len(plddt), 1) if plddt else None,
+        "source": "ESMFold (Meta) via api.esmatlas.com",
+    }
+    with _fold_cache_lock:
+        _fold_cache[seq] = result
+        while len(_fold_cache) > FOLD_CACHE_SIZE:
+            _fold_cache.popitem(last=False)
+    return result
 
 
 @app.get("/comparison")

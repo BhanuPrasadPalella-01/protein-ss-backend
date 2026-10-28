@@ -26,6 +26,8 @@ connection and LayerNorm adds a further +0.8.
 | `POST` | `/predict/baseline` | Predict a pasted sequence: `{"sequence": "MKTAYIAKQR..."}`. Only the 20 standard amino-acid letters, max 700 residues. |
 | `GET` | `/samples` | The CB513 test proteins available in the explorer |
 | `GET` | `/samples/{id}/predict` | PSSM and attention-model predictions for a sample, with match rates against the true structure |
+| `GET` | `/samples/{id}/trace` | The attention model's intermediate values for a window of a sample (PSSM input, embeddings, BiLSTM output, per-head attention weights, output probabilities). Optional `start` and `length` (4–24, default 12); without `start` it picks a window with clean helix/strand/coil runs in the true structure |
+| `POST` | `/fold` | 3D structure for a sequence from [ESMFold](https://esmatlas.com): `{"sequence": "..."}`, max 400 residues. Returns PDB text plus per-residue confidence (pLDDT, 0–100). Cached in memory |
 | `GET` | `/comparison` | Benchmark numbers for the three models |
 | `GET`/`HEAD` | `/health` | Liveness check (plain `ok`) |
 
@@ -33,6 +35,13 @@ Pasted sequences use the **baseline** model, because the stronger models need a 
 for an arbitrary sequence without a database search. Its live output gets a cosmetic clean-up of isolated
 one-residue helix/strand predictions; sample predictions are returned raw so the match rates line up with the
 benchmark.
+
+### About `/fold`
+
+Our models predict a label per residue, not 3D coordinates. `/fold` forwards the sequence to Meta's public
+ESMFold API (override with the `ESMFOLD_URL` environment variable) and returns its predicted structure, which the
+web app colors with our model's labels. Sequences sent to `/fold` therefore leave this server. The public API
+can be slow or unavailable; the endpoint then answers 502/503 with a readable message.
 
 ## Run locally
 
