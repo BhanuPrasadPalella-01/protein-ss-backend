@@ -1,4 +1,5 @@
 import json
+import re
 import torch
 import numpy as np
 from fastapi import FastAPI, HTTPException
@@ -162,6 +163,88 @@ def predict_sample(sample_id: str):
         "pssm_match_accuracy": match_rate(pssm_structure),
         "attention_prediction": attn_structure,
         "attention_match_accuracy": match_rate(attn_structure),
+    }
+
+
+TRACE_DEFAULT_LENGTH = 12
+
+
+def _r(t, digits=3):
+    """Tensor -> nested lists rounded for a compact JSON payload."""
+    return np.round(t.cpu().numpy().astype(np.float64), digits).tolist()
+
+
+def clearest_window(structure, length):
+    """Default window: the one whose true structure has the most kinds of clean runs (3+ residues),
+    then the fewest short fragments (earliest wins). Uses only the true labels, not the model's
+    predictions, so the default isn't picked for accuracy."""
+    def score(i):
+        runs = re.findall(r"((.)\2*)", structure[i:i + length])
+        clean = {label for run, label in runs if len(run) >= 3}
+        fragments = sum(len(run) < 3 for run, _ in runs)
+        return (len(clean), -fragments)
+    return max(range(len(structure) - length + 1), key=lambda i: (score(i), -i))
+
+
+@app.get("/samples/{sample_id}/trace")
+def trace_sample(sample_id: str, start: int | None = None, length: int = TRACE_DEFAULT_LENGTH):
+    """Intermediate values of the PSSM + attention model for a window of a sample protein.
+
+    Runs the same layers as BiLSTMAttentionPSSM.forward one at a time so the activations between
+    them can be returned: the PSSM input, embeddings, BiLSTM output, per-head attention weights and
+    output probabilities. Attention weights are the model's own (each row sums to 1 over the whole
+    protein); only the columns inside the window are returned, plus the share that falls outside it.
+    """
+    if sample_id not in SAMPLES:
+        raise HTTPException(404, f"Sample '{sample_id}' not found")
+    sample = SAMPLES[sample_id]
+    seq, true_structure = sample["sequence"], sample["true_structure"]
+    n = len(seq)
+    if not 4 <= length <= 24:
+        raise HTTPException(400, "length must be between 4 and 24")
+    length = min(length, n)
+    if start is None:
+        start = clearest_window(true_structure, length)
+    if not 0 <= start <= n - length:
+        raise HTTPException(400, f"start must be between 0 and {n - length} for this sample")
+    end = start + length
+
+    indices = [aa_to_idx.get(ch, aa_to_idx['X']) for ch in seq]
+    X = torch.tensor([indices], dtype=torch.long).to(device)
+    PSSM = torch.tensor(np.array([sample["pssm"]], dtype=np.float32)).to(device)
+
+    m = attention_model
+    with torch.no_grad():
+        embedded = m.embedding(X)
+        combined = torch.cat([embedded, PSSM], dim=-1)
+        lstm_out, _ = m.lstm(combined)
+        attn_out, weights = m.attention(lstm_out, lstm_out, lstm_out,
+                                        need_weights=True, average_attn_weights=False)
+        logits = m.classifier(m.layer_norm(lstm_out + attn_out))
+        probs = torch.softmax(logits, dim=-1)[0]
+
+    window_weights = weights[0][:, start:end, :]          # (heads, length, n)
+    inside = window_weights[:, :, start:end]              # (heads, length, length)
+    predicted = ''.join(class_names[p] for p in probs.argmax(dim=-1).cpu().numpy())
+
+    return {
+        "id": sample_id,
+        "sequence": seq,
+        "true_structure": true_structure,
+        "predicted_structure": predicted,
+        "start": start,
+        "length": length,
+        "window": {
+            "residues": seq[start:end],
+            "true": true_structure[start:end],
+            "predicted": predicted[start:end],
+            "pssm": _r(PSSM[0, start:end]),
+            "embedding": _r(embedded[0, start:end]),
+            "bilstm": _r(lstm_out[0, start:end]),
+            "attention": _r(inside),
+            "attention_outside": _r(1 - inside.sum(dim=-1)),
+            "probabilities": _r(probs[start:end]),
+        },
     }
 
 
