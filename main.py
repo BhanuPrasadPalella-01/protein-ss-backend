@@ -10,7 +10,7 @@ import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from model import BiLSTMTagger, BiLSTMTaggerPSSM, BiLSTMAttentionPSSM
 
@@ -50,7 +50,10 @@ with open('data/sample_proteins.json') as f:
 
 
 class SequenceRequest(BaseModel):
-    sequence: str
+    # Hard cap on the raw payload so a huge body is rejected (422) before any
+    # per-character work; the per-endpoint residue limits (700 / 400) still
+    # apply in clean_sequence with a friendlier 400 message.
+    sequence: str = Field(max_length=10_000)
 
 
 def compute_percentages(structure_str):
